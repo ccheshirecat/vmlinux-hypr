@@ -4,9 +4,11 @@
 
 set -e
 
-KERNEL_DIR="/data/linux-6.12.43"
-BUILD_THREADS=$(nproc)
-KERNEL_VERSION="6.12.43-hypr"
+# Allow override via environment or use current directory
+KERNEL_DIR="${KERNEL_DIR:-$(pwd)}"
+BUILD_THREADS="${BUILD_THREADS:-$(nproc)}"
+KERNEL_VERSION="${KERNEL_VERSION:-$(make kernelversion 2>/dev/null || echo "6.12.43")-hypr}"
+OUTPUT_BASE="${OUTPUT_BASE:-${KERNEL_DIR}/build}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -43,14 +45,14 @@ build_kernel() {
     # Build kernel
     echo_info "Compiling kernel (this may take a while)..."
     make -j${BUILD_THREADS} O="${output_dir}" olddefconfig
-    make -j${BUILD_THREADS} O="${output_dir}" bzImage modules
+    make -j${BUILD_THREADS} O="${output_dir}" vmlinux modules
     
     # Install modules to temp directory
     echo_info "Installing modules..."
     make -j${BUILD_THREADS} O="${output_dir}" INSTALL_MOD_PATH="${output_dir}/modules" modules_install
     
-    # Copy kernel image
-    cp "${output_dir}/arch/x86/boot/bzImage" "${output_dir}/vmlinuz-${KERNEL_VERSION}-${kernel_name}"
+    # Copy kernel image (ELF format for fast microVM boot)
+    cp "${output_dir}/vmlinux" "${output_dir}/vmlinux-${KERNEL_VERSION}-${kernel_name}"
     cp "${output_dir}/System.map" "${output_dir}/System.map-${KERNEL_VERSION}-${kernel_name}"
     cp "${output_dir}/.config" "${output_dir}/config-${KERNEL_VERSION}-${kernel_name}"
     
