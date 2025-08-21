@@ -12,6 +12,7 @@
 #include <uapi/linux/kvm_hypr.h>
 #include <asm/vmx.h>
 #include <asm/vmm_control.h>
+#include "../mmu/mmu_internal.h"
 #include "vmx.h"
 #include "vmcs.h"
 #include "vmcs12.h"
@@ -213,10 +214,11 @@ struct ept_swap_work {
   u64 new_eptp;
   int result;
   struct completion done;
+  call_single_data_t csd;
 };
 
 static void ept_swap_on_cpu(void *data) {
-  struct ept_swap_work *work = data;
+  struct ept_swap_work *work = container_of(data, struct ept_swap_work, csd);
   struct kvm_vcpu *vcpu = work->vcpu;
 
   /* Load the vCPU on this CPU */
@@ -277,15 +279,15 @@ int kvm_vm_ioctl_ept_swap_all(struct kvm *kvm, u64 new_eptp) {
     works[i].new_eptp = new_eptp;
     works[i].result = 0;
     init_completion(&works[i].done);
+    works[i].csd.func = ept_swap_on_cpu;
+    works[i].csd.info = &works[i].csd;
 
     /* Schedule work on the CPU where the vCPU should run */
     if (vcpu->cpu >= 0) {
-      smp_call_function_single_async(vcpu->cpu,
-                                     (struct __call_single_data *)ept_swap_on_cpu,
-                                     &works[i]);
+      smp_call_function_single_async(vcpu->cpu, &works[i].csd);
     } else {
       /* vCPU not assigned to a CPU, do it locally */
-      ept_swap_on_cpu(&works[i]);
+      ept_swap_on_cpu(&works[i].csd);
     }
   }
 

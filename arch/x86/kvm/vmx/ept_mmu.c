@@ -63,7 +63,7 @@ static struct kvm_mmu_page *ept_alloc_page(struct kvm *kvm, gfn_t gfn, int level
 {
 	struct kvm_mmu_page *sp;
 	
-	sp = kvm_mmu_memory_cache_alloc(&kvm->arch.mmu_page_cache);
+	sp = kmem_cache_zalloc(mmu_page_header_cache, GFP_KERNEL_ACCOUNT);
 	if (!sp)
 		return NULL;
 	
@@ -75,7 +75,7 @@ static struct kvm_mmu_page *ept_alloc_page(struct kvm *kvm, gfn_t gfn, int level
 	sp->spt = (u64 *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
 	
 	if (!sp->spt) {
-		kmem_cache_free(kvm->arch.mmu_page_cache.kmem_cache, sp);
+		kmem_cache_free(mmu_page_header_cache, sp);
 		return NULL;
 	}
 	
@@ -91,8 +91,9 @@ void kvm_mmu_free_page(struct kvm_mmu_page *sp)
 	if (sp->spt)
 		free_page((unsigned long)sp->spt);
 	
-	kmem_cache_free(kvm->arch.mmu_page_cache.kmem_cache, sp);
+	kmem_cache_free(mmu_page_header_cache, sp);
 }
+EXPORT_SYMBOL_GPL(kvm_mmu_free_page);
 
 /* Allocate a new EPT page */
 struct kvm_mmu_page *kvm_mmu_alloc_page(struct kvm *kvm, struct kvm_mmu_page *parent, 
@@ -100,6 +101,7 @@ struct kvm_mmu_page *kvm_mmu_alloc_page(struct kvm *kvm, struct kvm_mmu_page *pa
 {
 	return ept_alloc_page(kvm, 0, level);
 }
+EXPORT_SYMBOL_GPL(kvm_mmu_alloc_page);
 
 /* Create EPT entry */
 static u64 ept_create_entry(u64 pfn, int level, bool writable, bool executable)
@@ -277,30 +279,9 @@ int kvm_mmu_populate_ept_from_snapshot(struct kvm *kvm, struct kvm_mmu_page *roo
 	
 	return ret;
 }
+EXPORT_SYMBOL_GPL(kvm_mmu_populate_ept_from_snapshot);
 
-/* Invalidate EPT mappings */
-void ept_sync_context(u64 eptp)
-{
-	if (cpu_has_vmx_invept_context()) {
-		struct {
-			u64 eptp;
-			u64 gpa;
-		} operand = { eptp, 0 };
-		
-		asm volatile("invept %0, %1"
-			     : : "m"(operand), "r"(1UL) /* single context */
-			     : "memory");
-	} else if (cpu_has_vmx_invept_global()) {
-		struct {
-			u64 eptp;
-			u64 gpa;
-		} operand = { eptp, 0 };
-		
-		asm volatile("invept %0, %1"
-			     : : "m"(operand), "r"(2UL) /* global */
-			     : "memory");
-	}
-}
+/* Note: ept_sync_context is defined in vmx_ops.h, removed duplicate */
 
 /* Free all pages in an EPT hierarchy */
 static void ept_free_table(u64 *table, int level)
@@ -345,3 +326,4 @@ void ept_cleanup_root(struct kvm_mmu_page *root)
 	ept_free_table(root->spt, EPT_LEVEL_PML4);
 	kvm_mmu_free_page(root);
 }
+EXPORT_SYMBOL_GPL(ept_cleanup_root);
