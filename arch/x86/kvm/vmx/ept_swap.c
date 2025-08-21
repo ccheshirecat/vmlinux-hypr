@@ -7,6 +7,7 @@
 #include <linux/kvm_host.h>
 #include <linux/kvm.h>
 #include <linux/mm.h>
+#include <linux/memblock.h>
 #include <linux/smp.h>
 #include <linux/atomic.h>
 #include <uapi/linux/kvm_hypr.h>
@@ -314,6 +315,7 @@ out_unlock:
   kfree(works);
   return ret;
 }
+EXPORT_SYMBOL_GPL(kvm_vm_ioctl_ept_swap_all);
 
 /* Create new EPT tables from guest memory snapshot */
 int vmx_create_ept_from_snapshot(struct kvm *kvm, void *snapshot_data,
@@ -386,6 +388,7 @@ void vmx_cleanup_prepared_ept(struct kvm *kvm, u64 eptp) {
 
   ept_swap_dbg("Cleaned up prepared EPT: EPTP=0x%llx\n", eptp);
 }
+EXPORT_SYMBOL_GPL(vmx_cleanup_prepared_ept);
 
 /* EPT swap initialization - called from vmx.c */
 int vmx_ept_swap_setup(void) {

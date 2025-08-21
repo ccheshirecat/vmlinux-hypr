@@ -20,7 +20,7 @@
 
 /* Global pointer to the control page */
 struct vmm_control_page *vmm_control_page_ptr;
-
+EXPORT_SYMBOL_GPL(vmm_control_page_ptr);
 
 /* Get the current CPU's control block */
 static inline struct vcpu_control_block *get_vcpu_control(void)
