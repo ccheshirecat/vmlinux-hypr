@@ -27,6 +27,7 @@ kvm-amd-y		+= svm/svm.o svm/vmenter.o svm/pmu.o svm/nested.o svm/avic.o
 
 kvm-amd-$(CONFIG_KVM_AMD_SEV)	+= svm/sev.o
 kvm-amd-$(CONFIG_KVM_HYPERV)	+= svm/hyperv.o
+kvm-amd-$(CONFIG_KVM_HYPR_EPT_SWAP)	+= svm/npt_swap.o svm/npt_mmu.o
 
 ifdef CONFIG_HYPERV
 kvm-y			+= kvm_onhyperv.o
