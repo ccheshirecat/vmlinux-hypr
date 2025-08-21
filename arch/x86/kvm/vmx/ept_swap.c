@@ -9,6 +9,7 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/atomic.h>
+#include <uapi/linux/kvm_hypr.h>
 #include <asm/vmx.h>
 #include <asm/vmm_control.h>
 #include "vmx.h"
@@ -16,6 +17,7 @@
 #include "vmcs12.h"
 #include "mmu.h"
 #include "capabilities.h"
+#include "vmx_ept_swap.h"
 
 /* EPT pointer validation masks */
 #define EPT_POINTER_MT_MASK 0x7ULL
@@ -328,7 +330,7 @@ int vmx_create_ept_from_snapshot(struct kvm *kvm, void *snapshot_data,
   root_hpa = __pa(root->spt);
 
   /* Build EPTP value */
-  eptp = root_hpa | VMX_EPTP_MT_WB | (EPT_PWL_4_LEVEL << VMX_EPTP_PWL_SHIFT);
+  eptp = root_hpa | VMX_EPTP_MT_WB | VMX_EPTP_PWL_4;
 
   if (enable_ept_ad_bits) eptp |= EPT_POINTER_AD_ENABLED;
 
@@ -352,7 +354,7 @@ int vmx_prepare_ept_swap(struct kvm *kvm, struct kvm_ept_prepare *prepare) {
   int ret;
 
   /* Create EPT from snapshot */
-  ret = vmx_create_ept_from_snapshot(kvm, prepare->snapshot_data,
+  ret = vmx_create_ept_from_snapshot(kvm, (void *)prepare->snapshot_addr,
                                      prepare->snapshot_size, &new_eptp);
   if (ret) return ret;
 
@@ -361,6 +363,13 @@ int vmx_prepare_ept_swap(struct kvm *kvm, struct kvm_ept_prepare *prepare) {
 
   ept_swap_dbg("Prepared EPT for swap: EPTP=0x%llx\n", new_eptp);
   return 0;
+}
+
+/* Helper to get MMU page from virtual address */
+static inline struct kvm_mmu_page *page_header(void *virt)
+{
+  struct page *page = virt_to_page(virt);
+  return (struct kvm_mmu_page *)page_private(page);
 }
 
 /* Clean up prepared EPT tables */

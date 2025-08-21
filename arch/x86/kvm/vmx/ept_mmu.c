@@ -8,9 +8,7 @@
 #include <linux/highmem.h>
 #include <linux/slab.h>
 #include <asm/vmx.h>
-#include <asm/kvm_mmu.h>
-#include "mmu.h"
-#include "mmu/mmu_internal.h"
+#include "../mmu/mmu_internal.h"
 #include "vmx.h"
 
 /* EPT page table entry bits */
