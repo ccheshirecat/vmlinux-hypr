@@ -10,6 +10,7 @@
 #include <asm/vmx.h>
 #include "../mmu/mmu_internal.h"
 #include "vmx.h"
+#include "vmx_ept_swap.h"
 
 /* EPT page table entry bits */
 #define EPT_READABLE    (1ULL << 0)
