@@ -332,10 +332,8 @@ void svm_cleanup_prepared_npt(struct kvm *kvm, u64 ncr3) {
 }
 /* Don't export - accessed via kvm_x86_ops */
 
-/* External registration function from ept_swap_ioctl.c */
-extern void hypr_register_ops(int (*swap_all)(struct kvm *, u64),
-                              int (*prepare)(struct kvm *, struct kvm_ept_prepare *),
-                              void (*cleanup)(struct kvm *, u64));
+/* Include header for registration function */
+#include "../ept_swap_ioctl.h"
 
 /* NPT swap initialization - called from svm.c */
 int svm_npt_swap_setup(void) {

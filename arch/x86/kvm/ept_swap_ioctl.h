@@ -3,6 +3,12 @@
 #define _EPT_SWAP_IOCTL_H
 
 #include <linux/kvm_host.h>
+#include <uapi/linux/kvm_hypr.h>
+
+/* Registration function for HYPR swap operations */
+void hypr_register_ops(int (*swap_all)(struct kvm *, u64),
+                       int (*prepare)(struct kvm *, struct kvm_ept_prepare *),
+                       void (*cleanup)(struct kvm *, u64));
 
 /* Ioctl handler function declarations */
 int kvm_vcpu_ioctl_get_eptp(struct kvm_vcpu *vcpu, void __user *argp);

@@ -386,10 +386,8 @@ void vmx_cleanup_prepared_ept(struct kvm *kvm, u64 eptp) {
 }
 /* Note: Don't export - accessed via kvm_x86_ops */
 
-/* External registration function from ept_swap_ioctl.c */
-extern void hypr_register_ops(int (*swap_all)(struct kvm *, u64),
-                              int (*prepare)(struct kvm *, struct kvm_ept_prepare *),
-                              void (*cleanup)(struct kvm *, u64));
+/* Include header for registration function */
+#include "../ept_swap_ioctl.h"
 
 /* EPT swap initialization - called from vmx.c */
 int vmx_ept_swap_setup(void) {
