@@ -16,11 +16,21 @@
 #include "ept_swap_ioctl.h"
 
 /* External functions from ept_swap.c */
-extern int vmx_get_eptp(struct kvm_vcpu *vcpu, u64 *eptp);
-extern int vmx_set_eptp(struct kvm_vcpu *vcpu, u64 new_eptp);
-extern int kvm_vm_ioctl_ept_swap_all(struct kvm *kvm, u64 new_eptp);
-extern int vmx_prepare_ept_swap(struct kvm *kvm, struct kvm_ept_prepare *prepare);
-extern void vmx_cleanup_prepared_ept(struct kvm *kvm, u64 eptp);
+/* Function pointers will be set by VMX/SVM modules */
+static int (*hypr_swap_all)(struct kvm *kvm, u64 new_ptr) = NULL;
+static int (*hypr_prepare_swap)(struct kvm *kvm, struct kvm_ept_prepare *prepare) = NULL;
+static void (*hypr_cleanup_prepared)(struct kvm *kvm, u64 ptr) = NULL;
+
+/* Registration functions for VMX/SVM modules */
+void hypr_register_ops(int (*swap_all)(struct kvm *, u64),
+                       int (*prepare)(struct kvm *, struct kvm_ept_prepare *),
+                       void (*cleanup)(struct kvm *, u64))
+{
+	hypr_swap_all = swap_all;
+	hypr_prepare_swap = prepare;
+	hypr_cleanup_prepared = cleanup;
+}
+EXPORT_SYMBOL_GPL(hypr_register_ops);
 
 /* Cache for prepared EPT roots */
 struct ept_cache_entry {
@@ -142,8 +152,13 @@ int kvm_vm_ioctl_ept_swap_all_handler(struct kvm *kvm, void __user *argp)
 	if (copy_from_user(&new_eptp, argp, sizeof(new_eptp)))
 		return -EFAULT;
 	
+	if (!hypr_swap_all) {
+		pr_err("HYPR swap operations not registered\n");
+		return -EOPNOTSUPP;
+	}
+	
 	start_time = ktime_get();
-	r = kvm_vm_ioctl_ept_swap_all(kvm, new_eptp);
+	r = hypr_swap_all(kvm, new_eptp);
 	end_time = ktime_get();
 	
 	if (r) {
@@ -211,7 +226,8 @@ int kvm_vm_ioctl_prepare_ept_swap(struct kvm *kvm, void __user *argp)
 			struct ept_cache_entry *oldest;
 			oldest = list_last_entry(&ept_cache, struct ept_cache_entry, list);
 			list_del(&oldest->list);
-			vmx_cleanup_prepared_ept(kvm, oldest->eptp);
+			if (hypr_cleanup_prepared)
+				hypr_cleanup_prepared(kvm, oldest->eptp);
 			kfree(oldest);
 			ept_cache_size--;
 		}

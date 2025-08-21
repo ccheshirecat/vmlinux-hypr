@@ -311,7 +311,7 @@ out_unlock:
   kfree(works);
   return ret;
 }
-EXPORT_SYMBOL_GPL(kvm_vm_ioctl_ept_swap_all);
+/* Note: Don't export - accessed via kvm_x86_ops */
 
 /* Create new EPT tables from guest memory snapshot */
 int vmx_create_ept_from_snapshot(struct kvm *kvm, void *snapshot_data,
@@ -384,7 +384,12 @@ void vmx_cleanup_prepared_ept(struct kvm *kvm, u64 eptp) {
 
   ept_swap_dbg("Cleaned up prepared EPT: EPTP=0x%llx\n", eptp);
 }
-EXPORT_SYMBOL_GPL(vmx_cleanup_prepared_ept);
+/* Note: Don't export - accessed via kvm_x86_ops */
+
+/* External registration function from ept_swap_ioctl.c */
+extern void hypr_register_ops(int (*swap_all)(struct kvm *, u64),
+                              int (*prepare)(struct kvm *, struct kvm_ept_prepare *),
+                              void (*cleanup)(struct kvm *, u64));
 
 /* EPT swap initialization - called from vmx.c */
 int vmx_ept_swap_setup(void) {
@@ -393,10 +398,17 @@ int vmx_ept_swap_setup(void) {
     return -EOPNOTSUPP;
   }
 
+  /* Register our operations with the ioctl handler */
+  hypr_register_ops(kvm_vm_ioctl_ept_swap_all,
+                    vmx_prepare_ept_swap,
+                    vmx_cleanup_prepared_ept);
+
   pr_info("HYPR EPT swap support initialized\n");
   return 0;
 }
 
 void vmx_ept_swap_cleanup(void) {
+  /* Unregister operations */
+  hypr_register_ops(NULL, NULL, NULL);
   pr_info("HYPR EPT swap support unloaded\n");
 }
