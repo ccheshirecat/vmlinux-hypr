@@ -28,6 +28,10 @@ int kvm_mmu_populate_ept_from_snapshot(struct kvm *kvm,
 void ept_sync_context(u64 eptp);
 void ept_cleanup_root(struct kvm_mmu_page *root);
 
+/* Module init/cleanup functions */
+int vmx_ept_swap_setup(void);
+void vmx_ept_swap_cleanup(void);
+
 #else
 
 /* Stub implementations when EPT swap is disabled */
