@@ -387,8 +387,8 @@ void vmx_cleanup_prepared_ept(struct kvm *kvm, u64 eptp) {
   ept_swap_dbg("Cleaned up prepared EPT: EPTP=0x%llx\n", eptp);
 }
 
-/* Module initialization */
-static int __init vmx_ept_swap_init(void) {
+/* EPT swap initialization - called from vmx.c */
+int vmx_ept_swap_setup(void) {
   if (!enable_ept) {
     pr_info("EPT swap: EPT not enabled\n");
     return -EOPNOTSUPP;
@@ -398,9 +398,6 @@ static int __init vmx_ept_swap_init(void) {
   return 0;
 }
 
-static void __exit vmx_ept_swap_exit(void) {
+void vmx_ept_swap_cleanup(void) {
   pr_info("HYPR EPT swap support unloaded\n");
 }
-
-module_init(vmx_ept_swap_init);
-module_exit(vmx_ept_swap_exit);
