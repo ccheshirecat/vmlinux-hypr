@@ -6,7 +6,7 @@
 
 struct kvm_ept_prepare;  /* Reuse Intel structure for AMD */
 
-#ifdef CONFIG_KVM_HYPR_NPT_SWAP
+#ifdef CONFIG_KVM_HYPR_EPT_SWAP
 
 /* NPT swap function declarations */
 int svm_get_ncr3(struct kvm_vcpu *vcpu, u64 *ncr3);
@@ -17,7 +17,12 @@ int svm_create_npt_from_snapshot(struct kvm *kvm, void *snapshot_data,
 void svm_cleanup_prepared_npt(struct kvm *kvm, u64 ncr3);
 int kvm_vm_ioctl_npt_swap_all(struct kvm *kvm, u64 new_ncr3);
 
-/* MMU helper functions */
+/* MMU helper functions - shared with Intel */
+struct kvm_mmu_page *kvm_mmu_alloc_page(struct kvm *kvm, 
+					 struct kvm_mmu_page *parent, int level);
+void kvm_mmu_free_page(struct kvm_mmu_page *sp);
+
+/* AMD-specific MMU functions */
 int kvm_mmu_populate_npt_from_snapshot(struct kvm *kvm, 
 				       struct kvm_mmu_page *root,
 				       void *snapshot_data, 
@@ -47,6 +52,6 @@ static inline int svm_prepare_npt_swap(struct kvm *kvm,
 	return -EOPNOTSUPP;
 }
 
-#endif /* CONFIG_KVM_HYPR_NPT_SWAP */
+#endif /* CONFIG_KVM_HYPR_EPT_SWAP */
 
 #endif /* _SVM_NPT_SWAP_H */

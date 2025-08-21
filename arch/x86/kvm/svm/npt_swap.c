@@ -15,7 +15,6 @@
 #include <asm/vmm_control.h>
 #include "../mmu/mmu_internal.h"
 #include "svm.h"
-#include "svm_ops.h"
 #include "svm_npt_swap.h"
 
 /* NPT Control Register (nCR3) validation masks */
@@ -88,8 +87,8 @@ int svm_set_ncr3(struct kvm_vcpu *vcpu, u64 new_ncr3) {
   /* Save old nCR3 */
   old_ncr3 = svm->vmcb->control.nested_cr3;
 
-  /* Load VMCB state */
-  svm_vcpu_load(vcpu, vcpu->cpu);
+  /* Make sure VMCB is loaded */
+  vcpu_load(vcpu);
 
   /* Set new nCR3 */
   svm->vmcb->control.nested_cr3 = new_ncr3;
