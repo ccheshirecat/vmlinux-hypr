@@ -19,7 +19,6 @@
 
 #include <linux/kvm.h>
 #include <linux/kvm_para.h>
-#include <linux/kvm_hypr.h>
 #include <linux/kvm_types.h>
 #include <linux/perf_event.h>
 #include <linux/pvclock_gtod.h>
@@ -1605,6 +1604,7 @@ struct kvm_vcpu_stat {
 };
 
 struct x86_instruction_info;
+struct kvm_ept_prepare;
 
 struct msr_data {
 	bool host_initiated;

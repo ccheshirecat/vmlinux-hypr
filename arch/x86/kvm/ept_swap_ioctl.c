@@ -13,6 +13,7 @@
 #include "../../include/uapi/linux/kvm_hypr.h"
 #include "vmx/vmx.h"
 #include "x86.h"
+#include "ept_swap_ioctl.h"
 
 /* External functions from ept_swap.c */
 extern int vmx_get_eptp(struct kvm_vcpu *vcpu, u64 *eptp);
@@ -190,7 +191,7 @@ int kvm_vm_ioctl_prepare_ept_swap(struct kvm *kvm, void __user *argp)
 	}
 	
 	/* Create EPT tables from snapshot */
-	prepare.snapshot_data = snapshot_data;
+	prepare.snapshot_addr = (__u64)snapshot_data;
 	r = kvm_x86_ops.prepare_ept_swap(kvm, &prepare);
 	vfree(snapshot_data);
 	

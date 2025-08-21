@@ -36,13 +36,7 @@
 
 #ifdef CONFIG_KVM_HYPR_EPT_SWAP
 #include "../../include/uapi/linux/kvm_hypr.h"
-/* External function declarations for EPT swap */
-extern int kvm_vcpu_ioctl_get_eptp(struct kvm_vcpu *vcpu, void __user *argp);
-extern int kvm_vcpu_ioctl_set_eptp(struct kvm_vcpu *vcpu, void __user *argp);
-extern int kvm_vm_ioctl_ept_swap_all_handler(struct kvm *kvm, void __user *argp);
-extern int kvm_vm_ioctl_prepare_ept_swap(struct kvm *kvm, void __user *argp);
-extern int kvm_vm_ioctl_commit_ept_swap(struct kvm *kvm, void __user *argp);
-extern void ept_swap_cache_cleanup(void);
+#include "ept_swap_ioctl.h"
 #endif
 
 #include <linux/clocksource.h>
