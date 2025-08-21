@@ -1604,6 +1604,7 @@ struct kvm_vcpu_stat {
 };
 
 struct x86_instruction_info;
+struct kvm_ept_prepare;
 
 struct msr_data {
 	bool host_initiated;
