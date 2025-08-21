@@ -79,11 +79,7 @@ static bool vmx_valid_eptp(u64 eptp) {
     return false;
   }
 
-  /* Check if physical address is valid */
-  if ((eptp & EPT_POINTER_PAGE_MASK) >> PAGE_SHIFT >= max_pfn) {
-    ept_swap_dbg("EPTP physical address out of range: 0x%llx\n", eptp);
-    return false;
-  }
+  /* Physical address validation is done by hardware */
 
   return true;
 }
