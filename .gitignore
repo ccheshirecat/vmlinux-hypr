@@ -178,3 +178,29 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+include/uapi/linux/netfilter/xt_connmark.h
+include/uapi/linux/netfilter/xt_dscp.h
+include/uapi/linux/netfilter/xt_mark.h
+include/uapi/linux/netfilter/xt_rateest.h
+include/uapi/linux/netfilter/xt_tcpmss.h
+include/uapi/linux/netfilter_ipv4/ipt_ecn.h
+include/uapi/linux/netfilter_ipv4/ipt_ttl.h
+include/uapi/linux/netfilter_ipv6/ip6t_hl.h
+net/netfilter/xt_dscp.c
+net/netfilter/xt_hl.c
+net/netfilter/xt_rateest.c
+net/netfilter/xt_tcpmss.c
+tools/memory-model/litmus-tests/Z6.0+pooncelock+pooncelock+pombonce.litmus
+include/uapi/linux/netfilter/xt_connmark.h
+include/uapi/linux/netfilter/xt_dscp.h
+include/uapi/linux/netfilter/xt_mark.h
+include/uapi/linux/netfilter/xt_rateest.h
+include/uapi/linux/netfilter/xt_tcpmss.h
+include/uapi/linux/netfilter_ipv4/ipt_ecn.h
+include/uapi/linux/netfilter_ipv4/ipt_ttl.h
+include/uapi/linux/netfilter_ipv6/ip6t_hl.h
+net/netfilter/xt_DSCP.c
+net/netfilter/xt_hl.c
+net/netfilter/xt_rateest.c
+net/netfilter/xt_tcpmss.c
+tools/memory-model/litmus-tests/Z6.0+pooncelock+pooncelock+pombonce.litmus
