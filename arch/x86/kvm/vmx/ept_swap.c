@@ -10,9 +10,13 @@
 #include <linux/memblock.h>
 #include <linux/smp.h>
 #include <linux/atomic.h>
+#include <linux/kthread.h>
+#include <linux/sched/rt.h>
+#include <linux/delay.h>
 #include <uapi/linux/kvm_hypr.h>
 #include <asm/vmx.h>
 #include <asm/vmm_control.h>
+#include <asm/msr-index.h>
 #include "../mmu/mmu_internal.h"
 #include "vmx.h"
 #include "vmcs.h"
@@ -38,6 +42,23 @@
 /* EPT page walk lengths */
 #define EPT_PWL_4_LEVEL 3
 #define EPT_PWL_5_LEVEL 4
+
+/* VMFUNC controls */
+#define VMFUNC_CTL_EPTP_SWITCHING (1ULL << 0)
+#define EPTP_LIST_SIZE 512  /* 512 entries * 8 bytes = 4KB page */
+
+/* Micro-batching executor state */
+struct hypr_executor_state {
+    struct task_struct *thread;
+    int cpu;
+    bool running;
+    struct kvm *kvm;
+    void *eptp_list_page;  /* Virtual address of EPTP list */
+    u64 eptp_list_phys;    /* Physical address for VMFUNC */
+};
+
+static DEFINE_PER_CPU(struct hypr_executor_state, hypr_executors);
+static bool vmfunc_enabled = false;
 
 /* Debug logging */
 static bool ept_swap_debug __read_mostly;
@@ -386,6 +407,262 @@ void vmx_cleanup_prepared_ept(struct kvm *kvm, u64 eptp) {
 }
 /* Note: Don't export - accessed via kvm_x86_ops */
 
+/* Setup VMFUNC for a vCPU */
+static int vmx_setup_vmfunc(struct kvm_vcpu *vcpu)
+{
+    struct vcpu_vmx *vmx = to_vmx(vcpu);
+    u64 vm_function_control;
+    u32 secondary_exec_ctl;
+    
+    /* Check if CPU supports VMFUNC */
+    if (!cpu_has_vmx_vmfunc()) {
+        ept_swap_dbg("CPU does not support VMFUNC\n");
+        return -EOPNOTSUPP;
+    }
+    
+    /* Enable VMFUNC in secondary execution controls */
+    secondary_exec_ctl = vmcs_read32(SECONDARY_VM_EXEC_CONTROL);
+    secondary_exec_ctl |= SECONDARY_EXEC_ENABLE_VMFUNC;
+    vmcs_write32(SECONDARY_VM_EXEC_CONTROL, secondary_exec_ctl);
+    
+    /* Enable EPTP switching function */
+    vm_function_control = VMFUNC_CTL_EPTP_SWITCHING;
+    vmcs_write64(VM_FUNCTION_CONTROL, vm_function_control);
+    
+    /* Set EPTP list address (will be populated later) */
+    if (per_cpu(hypr_executors, vcpu->cpu).eptp_list_phys) {
+        vmcs_write64(EPTP_LIST_ADDRESS, 
+                    per_cpu(hypr_executors, vcpu->cpu).eptp_list_phys);
+    }
+    
+    ept_swap_dbg("VMFUNC enabled for vCPU %d\n", vcpu->vcpu_id);
+    return 0;
+}
+
+/* Populate EPTP list for VMFUNC switching */
+static int vmx_populate_eptp_list(struct kvm *kvm, u64 *eptp_array, int num_views)
+{
+    struct hypr_executor_state *executor;
+    u64 *eptp_list;
+    int cpu, i;
+    
+    if (num_views > EPTP_LIST_SIZE) {
+        ept_swap_dbg("Too many views: %d (max %d)\n", num_views, EPTP_LIST_SIZE);
+        return -EINVAL;
+    }
+    
+    /* Populate EPTP list on all CPUs */
+    for_each_online_cpu(cpu) {
+        executor = &per_cpu(hypr_executors, cpu);
+        
+        if (!executor->eptp_list_page) {
+            /* Allocate EPTP list page */
+            executor->eptp_list_page = (void *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
+            if (!executor->eptp_list_page) {
+                ept_swap_dbg("Failed to allocate EPTP list for CPU %d\n", cpu);
+                return -ENOMEM;
+            }
+            executor->eptp_list_phys = __pa(executor->eptp_list_page);
+        }
+        
+        eptp_list = (u64 *)executor->eptp_list_page;
+        
+        /* Copy EPTP values */
+        for (i = 0; i < num_views; i++) {
+            eptp_list[i] = eptp_array[i];
+        }
+        
+        /* Mark remaining entries as invalid */
+        for (i = num_views; i < EPTP_LIST_SIZE; i++) {
+            eptp_list[i] = 0;
+        }
+    }
+    
+    /* Update control page */
+    if (vmm_control_page_ptr) {
+        vmm_control_page_ptr->eptp_list_phys = per_cpu(hypr_executors, 0).eptp_list_phys;
+        vmm_control_page_ptr->num_views = num_views;
+        vmm_control_page_ptr->vmfunc_available = 1;
+        smp_wmb();
+    }
+    
+    ept_swap_dbg("EPTP list populated with %d views\n", num_views);
+    return 0;
+}
+
+/* Micro-batching executor thread function */
+static int hypr_executor_thread(void *data)
+{
+    struct hypr_executor_state *state = data;
+    struct kvm *kvm = state->kvm;
+    struct kvm_vcpu *vcpu;
+    struct vcpu_control_block *vcpu_ctrl;
+    struct hypr_swap_control *swap;
+    u64 *eptp_list;
+    unsigned long i;
+    u64 desired_gen, applied_gen;
+    u16 desired_idx;
+    u64 new_eptp;
+    u64 start_ns, end_ns;
+    int swaps_performed = 0;
+    
+    /* Set real-time priority for low latency */
+    struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
+    sched_setscheduler(current, SCHED_FIFO, &param);
+    
+    /* Bind to specific CPU */
+    set_cpus_allowed_ptr(current, cpumask_of(state->cpu));
+    
+    pr_info("HYPR executor thread started on CPU %d\n", state->cpu);
+    
+    eptp_list = (u64 *)state->eptp_list_page;
+    
+    while (state->running) {
+        swaps_performed = 0;
+        
+        /* Check each vCPU for pending swaps */
+        kvm_for_each_vcpu(i, vcpu, kvm) {
+            /* Only handle vCPUs on our CPU */
+            if (vcpu->cpu != state->cpu)
+                continue;
+                
+            if (!vmm_control_page_ptr || i >= MAX_VCPUS)
+                continue;
+                
+            vcpu_ctrl = &vmm_control_page_ptr->vcpus[i];
+            swap = &vcpu_ctrl->swap_control;
+            
+            /* Read generation counters atomically */
+            desired_gen = atomic64_read(&swap->desired_gen);
+            applied_gen = atomic64_read(&swap->applied_gen);
+            
+            /* Check if swap is needed (generation mismatch) */
+            if (desired_gen == applied_gen)
+                continue;
+                
+            /* Read desired index */
+            desired_idx = atomic_read(&swap->desired_idx);
+            
+            /* Validate index */
+            if (desired_idx >= vmm_control_page_ptr->num_views) {
+                pr_warn("HYPR: Invalid view index %u from vCPU %lu\n", 
+                        desired_idx, i);
+                continue;
+            }
+            
+            /* Get new EPTP from list */
+            new_eptp = eptp_list[desired_idx];
+            if (!new_eptp) {
+                pr_warn("HYPR: No EPTP for view %u\n", desired_idx);
+                continue;
+            }
+            
+            start_ns = ktime_get_ns();
+            
+            /* Load vCPU context */
+            vcpu_load(vcpu);
+            
+            /* Perform the EPT swap */
+            if (vmx_set_eptp(vcpu, new_eptp) == 0) {
+                /* Success - update applied state */
+                atomic_set(&swap->applied_idx, desired_idx);
+                atomic64_set(&swap->applied_gen, desired_gen);
+                
+                end_ns = ktime_get_ns();
+                atomic64_set(&swap->swap_latency_ns, end_ns - start_ns);
+                atomic64_inc(&swap->swap_count);
+                
+                swaps_performed++;
+                
+                ept_swap_dbg("Executor: Swapped vCPU %lu to view %u in %lld ns\n",
+                            i, desired_idx, end_ns - start_ns);
+            }
+            
+            /* Unload vCPU */
+            vcpu_put(vcpu);
+        }
+        
+        /* Brief pause to avoid spinning too hard */
+        if (swaps_performed == 0) {
+            /* No swaps needed, brief sleep */
+            usleep_range(10, 50);  /* 10-50 microseconds */
+        } else {
+            /* Swaps performed, just yield */
+            cpu_relax();
+        }
+        
+        /* Check for kthread stop */
+        if (kthread_should_stop())
+            break;
+    }
+    
+    pr_info("HYPR executor thread stopped on CPU %d\n", state->cpu);
+    return 0;
+}
+
+/* Start micro-batching executors */
+static int vmx_start_executors(struct kvm *kvm)
+{
+    struct hypr_executor_state *executor;
+    int cpu;
+    
+    for_each_online_cpu(cpu) {
+        executor = &per_cpu(hypr_executors, cpu);
+        
+        if (executor->thread) {
+            pr_warn("HYPR: Executor already running on CPU %d\n", cpu);
+            continue;
+        }
+        
+        executor->cpu = cpu;
+        executor->kvm = kvm;
+        executor->running = true;
+        
+        /* Create high-priority kernel thread */
+        executor->thread = kthread_create(hypr_executor_thread, executor,
+                                         "hypr_exec_%d", cpu);
+        if (IS_ERR(executor->thread)) {
+            pr_err("HYPR: Failed to create executor thread for CPU %d\n", cpu);
+            executor->thread = NULL;
+            executor->running = false;
+            return PTR_ERR(executor->thread);
+        }
+        
+        /* Wake up the thread */
+        wake_up_process(executor->thread);
+    }
+    
+    pr_info("HYPR: Started executor threads on %d CPUs\n", num_online_cpus());
+    return 0;
+}
+
+/* Stop micro-batching executors */
+static void vmx_stop_executors(void)
+{
+    struct hypr_executor_state *executor;
+    int cpu;
+    
+    for_each_online_cpu(cpu) {
+        executor = &per_cpu(hypr_executors, cpu);
+        
+        if (!executor->thread)
+            continue;
+            
+        executor->running = false;
+        kthread_stop(executor->thread);
+        executor->thread = NULL;
+        
+        /* Free EPTP list page */
+        if (executor->eptp_list_page) {
+            free_page((unsigned long)executor->eptp_list_page);
+            executor->eptp_list_page = NULL;
+            executor->eptp_list_phys = 0;
+        }
+    }
+    
+    pr_info("HYPR: Stopped all executor threads\n");
+}
+
 /* Include header for registration function */
 #include "../ept_swap_ioctl.h"
 
@@ -394,6 +671,14 @@ int vmx_ept_swap_setup(void) {
   if (!enable_ept) {
     pr_info("EPT swap: EPT not enabled\n");
     return -EOPNOTSUPP;
+  }
+
+  /* Check for VMFUNC support */
+  if (cpu_has_vmx_vmfunc()) {
+    vmfunc_enabled = true;
+    pr_info("HYPR: VMFUNC EPTP switching supported\n");
+  } else {
+    pr_info("HYPR: VMFUNC not available, using executor fast path\n");
   }
 
   /* Register our operations with the ioctl handler */
@@ -406,6 +691,9 @@ int vmx_ept_swap_setup(void) {
 }
 
 void vmx_ept_swap_cleanup(void) {
+  /* Stop all executor threads */
+  vmx_stop_executors();
+  
   /* Unregister operations */
   hypr_register_ops(NULL, NULL, NULL);
   pr_info("HYPR EPT swap support unloaded\n");

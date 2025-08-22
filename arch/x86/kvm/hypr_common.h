@@ -22,6 +22,11 @@ struct hypr_ops {
 	int (*setup)(void);
 	void (*cleanup)(void);
 	
+	/* Fast-path operations */
+	int (*setup_fast_path)(struct kvm *kvm, struct kvm_fast_path_setup *setup);
+	int (*start_executors)(struct kvm *kvm);
+	void (*stop_executors)(void);
+	
 	/* Feature name for logging */
 	const char *name;
 };
@@ -39,6 +44,9 @@ static inline struct hypr_ops *get_hypr_ops(void)
 		.cleanup_prepared = vmx_cleanup_prepared_ept,
 		.setup = vmx_ept_swap_setup,
 		.cleanup = vmx_ept_swap_cleanup,
+		.setup_fast_path = vmx_setup_fast_path,
+		.start_executors = vmx_start_executors,
+		.stop_executors = vmx_stop_executors,
 		.name = "Intel EPT"
 	};
 	return &vmx_hypr_ops;
@@ -57,6 +65,9 @@ static inline struct hypr_ops *get_hypr_ops(void)
 		.cleanup_prepared = svm_cleanup_prepared_npt,
 		.setup = svm_npt_swap_setup,
 		.cleanup = svm_npt_swap_cleanup,
+		.setup_fast_path = svm_setup_fast_path,
+		.start_executors = svm_start_executors,
+		.stop_executors = svm_stop_executors,
 		.name = "AMD NPT"
 	};
 	return &svm_hypr_ops;
@@ -103,6 +114,27 @@ static inline int kvm_vm_ioctl_hypr_swap(struct kvm *kvm, unsigned int ioctl,
 		if (copy_from_user(&prepare, (void __user *)arg, sizeof(prepare)))
 			return -EFAULT;
 		return ops->prepare_swap(kvm, &prepare);
+	}
+	
+	case KVM_SETUP_FAST_PATH: {
+		struct kvm_fast_path_setup setup;
+		if (copy_from_user(&setup, (void __user *)arg, sizeof(setup)))
+			return -EFAULT;
+		if (ops->setup_fast_path)
+			return ops->setup_fast_path(kvm, &setup);
+		return -EOPNOTSUPP;
+	}
+	
+	case KVM_START_EXECUTORS: {
+		if (ops->start_executors)
+			return ops->start_executors(kvm);
+		return -EOPNOTSUPP;
+	}
+	
+	case KVM_STOP_EXECUTORS: {
+		if (ops->stop_executors)
+			ops->stop_executors();
+		return 0;
 	}
 	
 	default:

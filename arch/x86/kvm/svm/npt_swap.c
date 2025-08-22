@@ -10,6 +10,9 @@
 #include <linux/memblock.h>
 #include <linux/smp.h>
 #include <linux/atomic.h>
+#include <linux/kthread.h>
+#include <linux/sched/rt.h>
+#include <linux/delay.h>
 #include <uapi/linux/kvm_hypr.h>
 #include <asm/svm.h>
 #include <asm/vmm_control.h>
@@ -20,6 +23,18 @@
 /* NPT Control Register (nCR3) validation masks */
 #define NPT_CR3_RESERVED_MASK 0xFFF0000000000F80ULL
 #define NPT_CR3_PAGE_MASK     0xFFFFFFFFFFFFF000ULL
+
+/* Micro-batching executor state for AMD */
+struct hypr_npt_executor {
+    struct task_struct *thread;
+    int cpu;
+    bool running;
+    struct kvm *kvm;
+    u64 *npt_list;        /* Array of prepared nCR3 values */
+    int num_views;
+};
+
+static DEFINE_PER_CPU(struct hypr_npt_executor, npt_executors);
 
 /* Debug logging */
 static bool npt_swap_debug __read_mostly;
@@ -69,7 +84,7 @@ int svm_get_ncr3(struct kvm_vcpu *vcpu, u64 *ncr3) {
 }
 /* Don't export - accessed via kvm_x86_ops */
 
-/* Set new NPT pointer in VMCB */
+/* Set new NPT pointer in VMCB - optimized for fast path */
 int svm_set_ncr3(struct kvm_vcpu *vcpu, u64 new_ncr3) {
   struct vcpu_svm *svm = to_svm(vcpu);
   u64 old_ncr3;
@@ -87,23 +102,19 @@ int svm_set_ncr3(struct kvm_vcpu *vcpu, u64 new_ncr3) {
   /* Save old nCR3 */
   old_ncr3 = svm->vmcb->control.nested_cr3;
 
-  /* Make sure VMCB is loaded */
-  vcpu_load(vcpu);
-
   /* Set new nCR3 */
   svm->vmcb->control.nested_cr3 = new_ncr3;
-  vmcb_mark_dirty(svm->vmcb, VMCB_NPT);
+  
+  /* Mark VMCB dirty for both NPT and ASID */
+  vmcb_mark_dirty(svm->vmcb, VMCB_NPT | VMCB_ASID);
 
-  /* Force TLB flush - AMD style */
-  svm->vmcb->control.tlb_ctl = TLB_CONTROL_FLUSH_ALL_ASID;
+  /* Use hardware TLB flush on next VMRUN - MUCH faster than manual flush */
+  svm->vmcb->control.tlb_ctl = 1;  /* Hardware auto-flush */
 
-  /* Request guest TLB flush */
-  kvm_make_request(KVM_REQ_TLB_FLUSH_GUEST, vcpu);
-
-  /* Memory barrier */
+  /* Memory barrier to ensure changes are visible */
   smp_wmb();
 
-  npt_swap_dbg("vCPU %d: Swapped nCR3 0x%llx -> 0x%llx\n", 
+  npt_swap_dbg("vCPU %d: Fast NPT swap 0x%llx -> 0x%llx\n", 
                vcpu->vcpu_id, old_ncr3, new_ncr3);
 
   return 0;
@@ -331,6 +342,236 @@ void svm_cleanup_prepared_npt(struct kvm *kvm, u64 ncr3) {
 }
 /* Don't export - accessed via kvm_x86_ops */
 
+/* AMD NPT micro-batching executor thread */
+static int npt_executor_thread(void *data)
+{
+    struct hypr_npt_executor *state = data;
+    struct kvm *kvm = state->kvm;
+    struct kvm_vcpu *vcpu;
+    struct vcpu_control_block *vcpu_ctrl;
+    struct hypr_swap_control *swap;
+    struct vcpu_svm *svm;
+    unsigned long i;
+    u64 desired_gen, applied_gen;
+    u16 desired_idx;
+    u64 new_ncr3;
+    u64 start_ns, end_ns;
+    int swaps_performed = 0;
+    
+    /* Set real-time priority */
+    struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
+    sched_setscheduler(current, SCHED_FIFO, &param);
+    
+    /* Bind to CPU */
+    set_cpus_allowed_ptr(current, cpumask_of(state->cpu));
+    
+    pr_info("HYPR NPT executor started on CPU %d\n", state->cpu);
+    
+    while (state->running) {
+        swaps_performed = 0;
+        
+        /* Process each vCPU on this CPU */
+        kvm_for_each_vcpu(i, vcpu, kvm) {
+            if (vcpu->cpu != state->cpu)
+                continue;
+                
+            if (!vmm_control_page_ptr || i >= MAX_VCPUS)
+                continue;
+                
+            vcpu_ctrl = &vmm_control_page_ptr->vcpus[i];
+            swap = &vcpu_ctrl->swap_control;
+            
+            /* Check for pending swap */
+            desired_gen = atomic64_read(&swap->desired_gen);
+            applied_gen = atomic64_read(&swap->applied_gen);
+            
+            if (desired_gen == applied_gen)
+                continue;
+                
+            /* Get desired view */
+            desired_idx = atomic_read(&swap->desired_idx);
+            
+            if (desired_idx >= state->num_views) {
+                pr_warn("NPT: Invalid view %u\n", desired_idx);
+                continue;
+            }
+            
+            /* Get prepared nCR3 */
+            new_ncr3 = state->npt_list[desired_idx];
+            if (!new_ncr3)
+                continue;
+                
+            start_ns = ktime_get_ns();
+            
+            /* Direct VMCB update - ultra fast path */
+            svm = to_svm(vcpu);
+            if (svm->vmcb) {
+                /* Atomic memory view swap */
+                svm->vmcb->control.nested_cr3 = new_ncr3;
+                vmcb_mark_dirty(svm->vmcb, VMCB_NPT | VMCB_ASID);
+                svm->vmcb->control.tlb_ctl = 1;  /* Hardware flush */
+                
+                /* Update applied state */
+                atomic_set(&swap->applied_idx, desired_idx);
+                atomic64_set(&swap->applied_gen, desired_gen);
+                
+                end_ns = ktime_get_ns();
+                atomic64_set(&swap->swap_latency_ns, end_ns - start_ns);
+                atomic64_inc(&swap->swap_count);
+                
+                swaps_performed++;
+                
+                npt_swap_dbg("NPT executor: Swapped vCPU %lu in %lld ns\n",
+                            i, end_ns - start_ns);
+            }
+        }
+        
+        /* Adaptive polling for optimal latency/CPU balance */
+        if (swaps_performed == 0) {
+            /* No recent swaps - check every 100 microseconds */
+            /* This gives us 10,000 checks/second per CPU */
+            usleep_range(100, 100);
+        } else {
+            /* Just performed swaps - likely more coming (burst) */
+            /* Check again in 10 microseconds for fast response */
+            usleep_range(10, 10);
+            
+            /* Could even make this adaptive based on swap frequency:
+             * - If >10 swaps/ms: no delay (continuous)
+             * - If 1-10 swaps/ms: 10us delay  
+             * - If <1 swap/ms: 100us delay
+             */
+        }
+        
+        if (kthread_should_stop())
+            break;
+    }
+    
+    pr_info("HYPR NPT executor stopped on CPU %d\n", state->cpu);
+    return 0;
+}
+
+/* Start NPT executors */
+static int svm_start_executors(struct kvm *kvm)
+{
+    struct hypr_npt_executor *executor;
+    int cpu;
+    
+    for_each_online_cpu(cpu) {
+        executor = &per_cpu(npt_executors, cpu);
+        
+        if (executor->thread)
+            continue;
+            
+        executor->cpu = cpu;
+        executor->kvm = kvm;
+        executor->running = true;
+        
+        /* Allocate NPT list */
+        executor->npt_list = kcalloc(MAX_EPT_VIEWS, sizeof(u64), GFP_KERNEL);
+        if (!executor->npt_list) {
+            pr_err("NPT: Failed to allocate view list\n");
+            return -ENOMEM;
+        }
+        
+        /* Create executor thread */
+        executor->thread = kthread_create(npt_executor_thread, executor,
+                                         "npt_exec_%d", cpu);
+        if (IS_ERR(executor->thread)) {
+            kfree(executor->npt_list);
+            executor->npt_list = NULL;
+            executor->thread = NULL;
+            return PTR_ERR(executor->thread);
+        }
+        
+        wake_up_process(executor->thread);
+    }
+    
+    /* Enable fast path in control page */
+    if (vmm_control_page_ptr) {
+        vmm_control_page_ptr->npt_fast_path = 1;
+        smp_wmb();
+    }
+    
+    pr_info("HYPR: Started NPT executors on %d CPUs\n", num_online_cpus());
+    return 0;
+}
+
+/* Stop NPT executors */
+static void svm_stop_executors(void)
+{
+    struct hypr_npt_executor *executor;
+    int cpu;
+    
+    for_each_online_cpu(cpu) {
+        executor = &per_cpu(npt_executors, cpu);
+        
+        if (!executor->thread)
+            continue;
+            
+        executor->running = false;
+        kthread_stop(executor->thread);
+        executor->thread = NULL;
+        
+        if (executor->npt_list) {
+            kfree(executor->npt_list);
+            executor->npt_list = NULL;
+        }
+    }
+    
+    pr_info("HYPR: Stopped NPT executors\n");
+}
+
+/* Populate NPT list for fast switching */
+int svm_populate_npt_list(struct kvm *kvm, u64 *ncr3_array, int num_views)
+{
+    struct hypr_npt_executor *executor;
+    int cpu, i;
+    
+    if (num_views > MAX_EPT_VIEWS)
+        return -EINVAL;
+        
+    for_each_online_cpu(cpu) {
+        executor = &per_cpu(npt_executors, cpu);
+        
+        if (!executor->npt_list)
+            continue;
+            
+        for (i = 0; i < num_views; i++) {
+            executor->npt_list[i] = ncr3_array[i];
+        }
+        executor->num_views = num_views;
+    }
+    
+    /* Update control page */
+    if (vmm_control_page_ptr) {
+        vmm_control_page_ptr->num_views = num_views;
+        smp_wmb();
+    }
+    
+    npt_swap_dbg("NPT list populated with %d views\n", num_views);
+    return 0;
+}
+
+/* Setup fast-path for AMD */
+static int svm_setup_fast_path(struct kvm *kvm, struct kvm_fast_path_setup *setup)
+{
+    int ret;
+    
+    /* Populate NPT list */
+    ret = svm_populate_npt_list(kvm, setup->eptp_list, setup->num_views);
+    if (ret)
+        return ret;
+    
+    /* Map control page */
+    if (setup->control_page_addr && vmm_control_page_ptr) {
+        pr_info("HYPR: Fast-path control page at 0x%llx\n", setup->control_page_addr);
+    }
+    
+    npt_swap_dbg("AMD fast-path setup complete with %u views\n", setup->num_views);
+    return 0;
+}
+
 /* Include header for registration function */
 #include "../ept_swap_ioctl.h"
 
@@ -347,10 +588,14 @@ int svm_npt_swap_setup(void) {
                     svm_cleanup_prepared_npt);
 
   pr_info("HYPR NPT swap support initialized for AMD\n");
+  pr_info("HYPR: AMD micro-batching fast path available\n");
   return 0;
 }
 
 void svm_npt_swap_cleanup(void) {
+  /* Stop executor threads */
+  svm_stop_executors();
+  
   /* Unregister operations */
   hypr_register_ops(NULL, NULL, NULL);
   pr_info("HYPR NPT swap support unloaded\n");

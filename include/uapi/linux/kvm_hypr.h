@@ -13,6 +13,9 @@
 #define KVM_PREPARE_EPT_SWAP      _IOW(KVMIO,  0xd8, struct kvm_ept_prepare)
 #define KVM_COMMIT_EPT_SWAP       _IOW(KVMIO,  0xd9, struct kvm_ept_swap)
 #define KVM_EPT_SWAP_ALL          _IOW(KVMIO,  0xda, __u64)
+#define KVM_SETUP_FAST_PATH       _IOW(KVMIO,  0xdb, struct kvm_fast_path_setup)
+#define KVM_START_EXECUTORS       _IO(KVMIO,   0xdc)
+#define KVM_STOP_EXECUTORS        _IO(KVMIO,   0xdd)
 
 /* Flags for EPT swap operations */
 #define KVM_EPT_SWAP_FLAG_ATOMIC     (1 << 0)  /* Ensure atomic swap across all vCPUs */
@@ -36,6 +39,15 @@ struct kvm_ept_prepare {
 	__u32 flags;            /* Preparation flags */
 	__u32 reserved;
 	__u64 reserved2[3];
+};
+
+/* Fast-path setup for high-frequency swapping */
+struct kvm_fast_path_setup {
+	__u64 control_page_addr;  /* Physical address of shared control page */
+	__u64 eptp_list[16];      /* Array of prepared EPT/NPT pointers */
+	__u32 num_views;          /* Number of valid views in list */
+	__u32 flags;              /* Setup flags */
+	__u64 reserved[4];
 };
 
 /* Statistics for EPT swap operations */

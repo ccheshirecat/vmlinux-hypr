@@ -33,6 +33,13 @@ void npt_cleanup_root(struct kvm_mmu_page *root);
 int svm_npt_swap_setup(void);
 void svm_npt_swap_cleanup(void);
 
+/* Fast-path functions */
+struct kvm_fast_path_setup;
+int svm_setup_fast_path(struct kvm *kvm, struct kvm_fast_path_setup *setup);
+int svm_populate_npt_list(struct kvm *kvm, u64 *ncr3_array, int num_views);
+int svm_start_executors(struct kvm *kvm);
+void svm_stop_executors(void);
+
 #else
 
 /* Stub implementations when NPT swap is disabled */

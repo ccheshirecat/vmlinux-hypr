@@ -32,6 +32,12 @@ void ept_cleanup_root(struct kvm_mmu_page *root);
 int vmx_ept_swap_setup(void);
 void vmx_ept_swap_cleanup(void);
 
+/* Fast-path functions */
+struct kvm_fast_path_setup;
+int vmx_setup_fast_path(struct kvm *kvm, struct kvm_fast_path_setup *setup);
+int vmx_start_executors(struct kvm *kvm);
+void vmx_stop_executors(void);
+
 #else
 
 /* Stub implementations when EPT swap is disabled */
