@@ -12,7 +12,7 @@
 
 #define VMM_CONTROL_PAGE_MAGIC 0x48595052564D4D21ULL /* "HYPRVMM!" */
 #define VMM_CONTROL_PAGE_ADDR  0x00FFE000UL
-#define MAX_VCPUS 64
+#define MAX_VCPUS 16  /* Most web VMs use 1-2 vCPUs, 16 is plenty */
 #define VMM_PAUSE_IPI_VECTOR 0xF0
 #define MAX_EPT_VIEWS 16  /* Maximum number of memory views per VM */
 
@@ -48,8 +48,7 @@ struct __attribute__((packed)) vcpu_control_block {
     
     /* High-performance swap control */
     struct hypr_swap_control swap_control;
-    
-    uint64_t reserved[2];
+    /* No extra reserved space - we're tight on space */
 };
 
 /* The full 4KB control page layout */
